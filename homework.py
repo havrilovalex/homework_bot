@@ -152,57 +152,63 @@ def parse_status(homework: dict) -> str:
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
+def handle_error(bot, error_message, last_error_message):
+    """Функция отправляет сообщение об ошибке в log и telegram."""
+    logger.error(error_message)
+    if error_message != last_error_message:
+        send_message(bot, error_message)
+    return error_message
+
+
+def process_homework(bot, homework_response):
+    """Функция отправляет сообщение, если статус ДЗ поменялся."""
+    if homework_response['homeworks']:
+        message = parse_status(homework_response['homeworks'][0])
+        send_message(bot=bot, message=message)
+
+
 def main():
     """Основная логика работы бота."""
     bot = TeleBot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
     last_error_message = ''
-
-    def handle_error(error_message):
-        logger.error(error_message)
-        nonlocal last_error_message
-        if error_message != last_error_message:
-            last_error_message = error_message
-            send_message(bot, error_message)
+    error_handlers = {
+        requests.exceptions.HTTPError: (
+            lambda e: f'Эндпоинт Яндекс Практикума не отвечает: {e}'),
+        EndpointRequestFailure: (
+            lambda e: f'Эндпоинт Яндекс Практикума недоступен: {e}'),
+        TypeError: lambda e: f'Ответ содержит неожиданный тип данных: {e}',
+        ValueError: lambda e: f'Ответ содержит неожиданные значения: {e}',
+        KeyError: lambda e: f'Ответ не содержит ключи: {e}',
+    }
     try:
         check_tokens()
     except MissingTokenException as error:
         error_message = f'{error}\nПринудительная останвока программы.'
         logger.critical(error_message)
         return
+
     while True:
         try:
             homework_response = get_api_answer(
                 timestamp=timestamp)
             check_response(homework_response)
-            if homework_response['homeworks']:
-                message = parse_status(homework_response['homeworks'][0])
-                send_message(bot=bot, message=message)
+            process_homework(bot, homework_response)
             timestamp = homework_response['current_date']
-
-        except MissingTokenException as error:
-            error_message = f'{error}\nПринудительная останвока программы.'
-            logger.critical(error_message)
-            send_message(bot, error_message)
-        except requests.exceptions.HTTPError as error:
-            error_message = f'Эндпоинт Яндекс Практикума не отвечает: {error}'
-            handle_error(error_message)
-        except EndpointRequestFailure as error:
-            error_message = f'Эндпоинт Яндекс Практикума недоступен: {error}'
-            handle_error(error_message)
-        except TypeError as error:
-            error_message = f'Ответ содержит неожиданный тип данных: {error}'
-            handle_error(error_message)
-        except ValueError as error:
-            error_message = f'Ответ содержит неожиданные значения: {error}'
-            handle_error(error_message)
-        except KeyError as error:
-            error_message = f'Ответ не содержит ключи: {error}'
-            handle_error(error_message)
         except StatusNotUpdated as error:
             logger.debug(error)
+        except Exception as error:
+            for exc_type, message_func in error_handlers.items():
+                if isinstance(error, exc_type):
+                    error_message = message_func(error)
+                    last_error_message = handle_error(
+                        bot,
+                        error_message,
+                        last_error_message)
+                    break
+        finally:
+            time.sleep(RETRY_PERIOD)
 
-        time.sleep(RETRY_PERIOD)
 
 if __name__ == '__main__':
     main()
