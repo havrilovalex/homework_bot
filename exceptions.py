@@ -5,29 +5,16 @@ import requests
 class MissingTokenException(ValueError):
     """Исключение отстутвия переменных окружения - токенов."""
 
-    def __init__(self, token):
+    def __init__(self, error_message):
         """Создает сообщение ошибки."""
-        self.message = (
-            f'Отсутствует обязательная переменная окружения: {token}'
-        )
-        super().__init__(self.message)
+        super().__init__(error_message)
 
 
 class EndpointRequestFailure(Exception):
     """Исключение непредвиденного сбоя при запросе к API ЯП."""
 
-    def __init__(self, response: requests.Response):
+    def __init__(self, status_code):
         """Создает сообщение ошибки."""
-        self.response = response
         super().__init__(
-            f"Запрос к эндпоинту API ЯП выдал ошибку: {response.status_code}"
+            f"Запрос к эндпоинту API ЯП выдал ошибку: {status_code}"
         )
-
-
-class StatusNotUpdated(Exception):
-    """Исключение при отсутсвии обновления статуса."""
-
-    def __init__(self):
-        """Создает сообщение ошибки."""
-        self.message = 'Статус домашнего задания не обновлялся'
-        super().__init__(self.message)

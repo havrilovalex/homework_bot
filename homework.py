@@ -8,15 +8,21 @@ import requests
 from dotenv import load_dotenv
 from telebot import TeleBot
 
-from exceptions import (EndpointRequestFailure, MissingTokenException,
-                        StatusNotUpdated)
+from exceptions import EndpointRequestFailure, MissingTokenException
 
 load_dotenv()
-
 
 PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+
+ENVIRONMENT_VARS = {
+    'PRACTICUM_TOKEN': PRACTICUM_TOKEN,
+    'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
+    'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID,
+
+}
+MISSING_ENV_VARS = []
 
 RETRY_PERIOD = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
@@ -28,16 +34,17 @@ HOMEWORK_VERDICTS = {
     'reviewing': 'Работа взята на проверку ревьюером.',
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
+ERROR_HANDLERS = {
+    requests.exceptions.HTTPError: (
+        lambda e: f'Эндпоинт Яндекс Практикума не отвечает: {e}'),
+    EndpointRequestFailure: (
+        lambda e: f'Эндпоинт Яндекс Практикума недоступен: {e}'),
+    TypeError: lambda e: f'Ответ содержит неожиданный тип данных: {e}',
+    ValueError: lambda e: f'Ответ содержит неожиданные значения: {e}',
+    KeyError: lambda e: f'Ответ не содержит ключи: {e}',
+}
 
 FORMAT_STRING = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-
-logging.basicConfig(
-    format=FORMAT_STRING,
-    level=logging.DEBUG,
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -48,18 +55,32 @@ stream_handler.setFormatter(formatter)
 logger.addHandler(stream_handler)
 
 
+def prepare_request_params(payload: dict[str, int]):
+    """Подготваливает словарь с параметрами запроса."""
+    request_info = {
+        'url': ENDPOINT,
+        'headers': HEADERS,
+        'params': payload
+    }
+    return request_info
+
+
 def check_tokens() -> None:
     """Проверяет наличие и корректность токенов эндпоинта, телеграма."""
-    if not PRACTICUM_TOKEN:
-        raise MissingTokenException('Practicum API')
-    if not TELEGRAM_TOKEN:
-        raise MissingTokenException('Telegram API')
-    if not TELEGRAM_CHAT_ID:
-        raise MissingTokenException('Chat ID')
+    for env_name, env_val in ENVIRONMENT_VARS.items():
+        if not env_val:
+            MISSING_ENV_VARS.append(env_name)
+    if not all((PRACTICUM_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN)):
+        error_message = (
+            f'Отсутсвуют токены: {MISSING_ENV_VARS}\n'
+            f'Принудительная останвока программы.'
+        )
+        logger.critical(error_message)
+        raise MissingTokenException(error_message)
     return None
 
 
-def send_message(bot: TeleBot, message: str) -> None:
+def send_message(bot: TeleBot, message: str) -> bool:
     """
     Функция отправляет сообщение через API Telegram.
 
@@ -67,14 +88,20 @@ def send_message(bot: TeleBot, message: str) -> None:
     message - подготовленный текст сообщения с обновленным статусом работы.
     """
     try:
+        logger.debug('Начало отправки сообщения через telegram')
         bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
             text=message,
         )
-    except Exception as e:
+    except (
+        requests.exceptions.RequestException,
+        Exception
+    ) as e:
         logger.error(f'Сбой в отправке сообщения через telegram: {e}')
+        return False
     else:
         logger.debug('Успешная отправка сообщения через telegram')
+        return True
 
 
 def get_api_answer(timestamp: int) -> dict:
@@ -83,50 +110,37 @@ def get_api_answer(timestamp: int) -> dict:
 
     timestamp - момент времени формата UNIX epoche, с которого нужно проверить.
     """
-    headers = HEADERS
     payload = {'from_date': timestamp}
-
+    parameters = prepare_request_params(payload)
     try:
-        homework_response = requests.get(
-            ENDPOINT,
-            headers=headers,
-            params=payload
-        )
-        homework_response.raise_for_status()
+        logging.debug('Отправка запроса на {url}, заголовки: {headers},'
+                      ' параметры запроса: {params}'.format(**parameters))
+        homework_response = requests.get(**parameters)
     except requests.RequestException as e:
-        raise EndpointRequestFailure(response=e.response) from e
-
-    if homework_response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR:
-        raise requests.exceptions.HTTPError(response=homework_response)
-    elif homework_response.status_code != HTTPStatus.OK:
-        raise EndpointRequestFailure(response=homework_response)
+        raise EndpointRequestFailure(e.response.status_code) from e
+    if homework_response.status_code != HTTPStatus.OK:
+        raise EndpointRequestFailure(homework_response.status_code)
     return homework_response.json()
 
 
-def check_response(response: dict) -> None:
+def check_response(response: dict) -> list:
     """Функция проверки корерктности формата ответа API."""
     if not isinstance(response, dict):
-        raise TypeError('Ответ не приведен в формат json')
-    if (
-        'homeworks' not in response.keys()
-    ) or (
-        not isinstance(response['homeworks'], list)
-    ):
-        raise TypeError('В ответе информация о ДЗ в неверном формате')
-    if isinstance(response['homeworks'], list) and not response['homeworks']:
-        raise StatusNotUpdated()
-    if (
-        'current_date' not in response.keys()
-    ) or (
-        not isinstance(response['current_date'], int)
-    ):
-        raise ValueError('В ответе отсутсвует информация о дате запроса')
-    if (
-        response['homeworks']
-    ) and (
-        not isinstance(response['homeworks'][0], dict)
-    ):
-        raise TypeError('Данные о домашнем задании не в словаре')
+        raise TypeError(
+            f'Ответ не приведен в формат json. Тип ответа - {type(response)}'
+        )
+
+    if ('homeworks' not in response.keys()):
+        raise KeyError('В ответе отсутствует ключ homeworks')
+    homeworks = response['homeworks']
+
+    if not isinstance(homeworks, list):
+        raise TypeError(
+            f'В ответе информация о ДЗ в формате не списка,'
+            f' а {type(homeworks)}'
+        )
+
+    return homeworks
 
 
 def parse_status(homework: dict) -> str:
@@ -160,10 +174,10 @@ def handle_error(bot, error_message, last_error_message):
     return error_message
 
 
-def process_homework(bot, homework_response):
+def process_homework(bot, homeworks):
     """Функция отправляет сообщение, если статус ДЗ поменялся."""
-    if homework_response['homeworks']:
-        message = parse_status(homework_response['homeworks'][0])
+    if homeworks:
+        message = parse_status(homeworks[0])
         send_message(bot=bot, message=message)
 
 
@@ -172,33 +186,28 @@ def main():
     bot = TeleBot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
     last_error_message = ''
-    error_handlers = {
-        requests.exceptions.HTTPError: (
-            lambda e: f'Эндпоинт Яндекс Практикума не отвечает: {e}'),
-        EndpointRequestFailure: (
-            lambda e: f'Эндпоинт Яндекс Практикума недоступен: {e}'),
-        TypeError: lambda e: f'Ответ содержит неожиданный тип данных: {e}',
-        ValueError: lambda e: f'Ответ содержит неожиданные значения: {e}',
-        KeyError: lambda e: f'Ответ не содержит ключи: {e}',
-    }
     try:
         check_tokens()
-    except MissingTokenException as error:
-        error_message = f'{error}\nПринудительная останвока программы.'
-        logger.critical(error_message)
+    except MissingTokenException:
         return
 
     while True:
         try:
             homework_response = get_api_answer(
                 timestamp=timestamp)
-            check_response(homework_response)
-            process_homework(bot, homework_response)
-            timestamp = homework_response['current_date']
-        except StatusNotUpdated as error:
-            logger.debug(error)
+            homeworks = check_response(homework_response)
+            if homeworks:
+                message = parse_status(homeworks[0])
+                if send_message(bot=bot, message=message):
+                    timestamp = homework_response.get(
+                        'current_date',
+                        timestamp
+                    )
+                    last_error_message = ''
+            else:
+                logger.debug('Статус домашнего задания не обновлялся')
         except Exception as error:
-            for exc_type, message_func in error_handlers.items():
+            for exc_type, message_func in ERROR_HANDLERS.items():
                 if isinstance(error, exc_type):
                     error_message = message_func(error)
                     last_error_message = handle_error(
@@ -211,4 +220,11 @@ def main():
 
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        format=FORMAT_STRING,
+        level=logging.DEBUG,
+        handlers=[
+            logging.StreamHandler()
+        ]
+    )
     main()
