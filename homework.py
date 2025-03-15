@@ -224,7 +224,8 @@ if __name__ == '__main__':
         format=FORMAT_STRING,
         level=logging.DEBUG,
         handlers=[
-            logging.StreamHandler()
+            logging.StreamHandler(),
+            logging.FileHandler('homework_bot.log')
         ]
     )
     main()
