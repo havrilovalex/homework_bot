@@ -1,5 +1,4 @@
 """Кастомные исключения для homework_bot."""
-import requests
 
 
 class MissingTokenException(ValueError):
