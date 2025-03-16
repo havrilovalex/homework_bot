@@ -4,9 +4,7 @@
 class MissingTokenException(ValueError):
     """Исключение отстутвия переменных окружения - токенов."""
 
-    def __init__(self, error_message):
-        """Создает сообщение ошибки."""
-        super().__init__(error_message)
+    pass
 
 
 class EndpointRequestFailure(Exception):

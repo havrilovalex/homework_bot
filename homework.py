@@ -1,12 +1,14 @@
 """Телеграм бот, отправляющий обновления статусов ДЗ для Яндекс Практикума."""
 import logging
 import os
+import sys
 import time
 from http import HTTPStatus
 
 import requests
 from dotenv import load_dotenv
 from telebot import TeleBot
+from telebot.apihelper import ApiException
 
 from exceptions import EndpointRequestFailure, MissingTokenException
 
@@ -15,14 +17,6 @@ load_dotenv()
 PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-
-ENVIRONMENT_VARS = {
-    'PRACTICUM_TOKEN': PRACTICUM_TOKEN,
-    'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
-    'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID,
-
-}
-MISSING_ENV_VARS = []
 
 RETRY_PERIOD = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
@@ -67,17 +61,22 @@ def prepare_request_params(payload: dict[str, int]):
 
 def check_tokens() -> None:
     """Проверяет наличие и корректность токенов эндпоинта, телеграма."""
+    missing_env_vars = []
+    ENVIRONMENT_VARS = {
+        'PRACTICUM_TOKEN': PRACTICUM_TOKEN,
+        'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
+        'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID,
+    }
     for env_name, env_val in ENVIRONMENT_VARS.items():
         if not env_val:
-            MISSING_ENV_VARS.append(env_name)
-    if not all((PRACTICUM_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN)):
+            missing_env_vars.append(env_name)
+    if missing_env_vars:
         error_message = (
-            f'Отсутсвуют токены: {MISSING_ENV_VARS}\n'
-            f'Принудительная останвока программы.'
+            f'Отсутсвуют токены: {missing_env_vars}\n'
+            'Принудительная останвока программы.'
         )
         logger.critical(error_message)
         raise MissingTokenException(error_message)
-    return None
 
 
 def send_message(bot: TeleBot, message: str) -> bool:
@@ -95,7 +94,7 @@ def send_message(bot: TeleBot, message: str) -> bool:
         )
     except (
         requests.exceptions.RequestException,
-        Exception
+        ApiException
     ) as e:
         logger.error(f'Сбой в отправке сообщения через telegram: {e}')
         return False
@@ -130,13 +129,13 @@ def check_response(response: dict) -> list:
             f'Ответ не приведен в формат json. Тип ответа - {type(response)}'
         )
 
-    if ('homeworks' not in response.keys()):
+    if 'homeworks' not in response:
         raise KeyError('В ответе отсутствует ключ homeworks')
     homeworks = response['homeworks']
 
     if not isinstance(homeworks, list):
         raise TypeError(
-            f'В ответе информация о ДЗ в формате не списка,'
+            'В ответе информация о ДЗ в формате не списка,'
             f' а {type(homeworks)}'
         )
 
@@ -174,22 +173,13 @@ def handle_error(bot, error_message, last_error_message):
     return error_message
 
 
-def process_homework(bot, homeworks):
-    """Функция отправляет сообщение, если статус ДЗ поменялся."""
-    if homeworks:
-        message = parse_status(homeworks[0])
-        send_message(bot=bot, message=message)
-
-
 def main():
     """Основная логика работы бота."""
     bot = TeleBot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
     last_error_message = ''
-    try:
-        check_tokens()
-    except MissingTokenException:
-        return
+
+    check_tokens()
 
     while True:
         try:
@@ -224,7 +214,7 @@ if __name__ == '__main__':
         format=FORMAT_STRING,
         level=logging.DEBUG,
         handlers=[
-            logging.StreamHandler(),
+            logging.StreamHandler(stream=sys.stdout),
             logging.FileHandler('homework_bot.log')
         ]
     )
